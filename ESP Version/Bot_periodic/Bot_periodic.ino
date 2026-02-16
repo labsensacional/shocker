@@ -1,37 +1,35 @@
 /********************************************************************
- *  ESP8266 RF-TRANSMITTER + TELEGRAM BOT
+ *  ESP8266 RF-TRANSMITTER + TELEGRAM BOT  –  PERIODIC MODE
  *  ---------------------------------------------------------------
- *  Uses:      - ESP8266WiFi library   (built-in)
- *             - WiFiClientSecure
- *             - UniversalTelegramBot (github.com/witnessmenow/Universal-Arduino-Telegram-Bot)
+ *  Level commands (/nivel1 … /nivel90) set the shock intensity.
+ *  /start begins periodic shocks at the current BPM (default 60).
+ *  /stop  stops them.
+ *  "NNN BPM" or "NNNBPM" changes the rate (10–200 BPM).
+ *  /vib and /son work as one-shot triggers, same as before.
  *
- *  Board:     NodeMCU 1.0 (ESP-12E module) 80 MHz / 4 M SPIFFS
+ *  Board:  NodeMCU 1.0 (ESP-12E module) 80 MHz / 4 M SPIFFS
  ********************************************************************/
 #include <Arduino.h>
-#include <ESP8266WiFi.h>              // *** NEW
-#include <WiFiClientSecure.h>         // *** NEW
-#include <UniversalTelegramBot.h>     // *** NEW
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
 #include <pgmspace.h>
 
-#include <EEPROM.h>               // *** NEW – simple KV storage
-#include <ESP8266WebServer.h>     // *** NEW – tiny HTTP server
+#include <EEPROM.h>
+#include <ESP8266WebServer.h>
 
 // ---------------- Pin assignments ----------------
 const uint8_t DATA_PIN   = 5;  // D1
 const uint8_t ENABLE_PIN = 4;  // D2
 
 // ---------------- Wi-Fi & Telegram credentials ----
-//const char* WIFI_SSID     = "Internet";       // *** NEW
-//const char* WIFI_PASSWORD = "1nt3rn3t";   // *** NEW
+const char* BOT_TOKEN = "COMPLETAR";  // keep private!
 
-const char* BOT_TOKEN = "7730578439:AAHMcMsn6uOFxHZzYb1dxCDllRwg8Dd3XMw";          // *** NEW  (keep private!)
-//const char* CHAT_ID   = "987654321";                // *** NEW  (your personal chat)
-
-// *** NEW --------------------------------------------------------------------
+// ---------------- Credential storage -------------
 #define MAX_CREDENTIALS 5
-#define EEPROM_SIZE     512       // enough for 5×(32+64) chars + header
+#define EEPROM_SIZE     512
 
-struct WiFiCred {                 // fixed-length to keep offsets simple
+struct WiFiCred {
   char ssid[32];
   char pass[64];
 };
@@ -39,8 +37,7 @@ struct WiFiCred {                 // fixed-length to keep offsets simple
 WiFiCred creds[MAX_CREDENTIALS];
 uint8_t  credCount = 0;
 
-ESP8266WebServer server(80);      // captive portal
-// ---------------------------------------------------------------------------
+ESP8266WebServer server(80);
 
 // ---------------- Pulse tables ----------------
 const int16_t vibSignal[] PROGMEM = {1345,-804,235,-786,193,-798,747,-276,727,-286,709,-302,711,-288,219,-798,193,-794,227,-792,223,-792,709,-312,693,-284,747,-264,737,-258,733,-288,731,-286,213,-792,225,-792,225,-790,193,-790,225,-790,227,-790,739,-278,217,-794,207,-800,195,-800,225,-792,709,-312,217,-778,721,-294,229,-778,195,-798,745,-274,217,-798,211,-784,725,-308,217,-768,219,-800,209,-792,739,-258,213,-828,193,-796,225};
@@ -51,19 +48,71 @@ const int16_t nivel30Signal[] PROGMEM = {1399, -754, 229, -806, 195, -794, 745, 
 const int16_t nivel60Signal[] PROGMEM = {1373, -778, 245, -772, 229, -772, 713, -308, 725, -284, 707, -304, 717, -290, 217, -802, 195, -796, 227, -792, 195, -822, 707, -312, 693, -318, 677, -298, 735, -290, 705, -288, 733, -310, 179, -808, 185, -832, 185, -800, 245, -788, 199, -814, 193, -800, 201, -796, 737, -284, 215, -792, 201, -816, 717, -274, 723, -280, 217, -796, 715, -318, 693, -294, 737, -290, 1388, -666, 263, -778, 231, -772, 225, -796, 709, -312, 691, -318, 711, -300, 711, -260, 737, -308, 693, -316, 215, -786, 205, -794, 195, -804, 227, -798, 201, -802, 203, -794, 243, -772, 723, -310, 215, -772, 209, -792, 739, -288, 703, -288, 735, -274, 723, -318, 215, -756, 237, -790, 719, -310, 215, -762, 711, -296, 735, -258, 735, -288, 213, -792, 225, -794, 225, -792, 193, -824, 195, -792, 235, -1266};
 const int16_t nivel90Signal[] PROGMEM = {1377, -784, 241, -770, 229, -772, 717, -310, 725, -286, 695, -294, 741, -258, 215, -828, 193, -796, 225, -796, 201, -798, 703, -320, 693, -296, 737, -288, 705, -294, 731, -254, 729, -310, 215, -798, 211, -778, 229, -808, 193, -798, 193, -824, 193, -824, 193, -792, 739, -280, 213, -796, 709, -290, 713, -294, 213, -792, 227, -794, 223, -792, 709, -312, 693, -318, 709, -264, 741, -288, 217, -798, 717, -274, 725, -282, 731, -300, 709, -290, 707, -294, 213, -794, 225, -794, 203, -1066, 1345, -786, 209, -792, 237, -792, 721, -274, 723, -282, 739, -276, 717, -290, 219, -804, 195, -798, 237, -790, 195, -796, 717, -320, 711, -264, 739, -260, 735, -292, 733, -274, 723, -280, 217, -794, 225, -796, 189, -830, 187, -800, 209, -824, 205, -792, 195, -802, 713, -310, 215, -798, 717, -258, 755, -260, 213, -828, 193, -796, 225, -792, 709, -310, 691, -318, 711, -300, 709, -288, 185, -830, 717, -274, 723, -318, 701, -274, 721, -292, 711, -292, 213, -794, 225, -794, 195, -1184};
 
+// ---------------------------------------------------------
+// RF helper
+template<size_t N>
+void sendSignal(const int16_t (&signal)[N], uint8_t repeats = 10) {
+  digitalWrite(ENABLE_PIN, HIGH);
+  for (uint8_t r = 0; r < repeats; r++) {
+    for (size_t i = 0; i < N; i++) {
+      int16_t v = pgm_read_word_near(signal + i);
+      digitalWrite(DATA_PIN, v > 0 ? HIGH : LOW);
+      delayMicroseconds(abs(v));
+    }
+  }
+  digitalWrite(DATA_PIN, LOW);
+  digitalWrite(ENABLE_PIN, LOW);
+}
 
-// *** NEW -------------------------------------------------
+// ---------------- Periodic shock state ----------------
+enum NivelIndex { NIV_1=0, NIV_10, NIV_30, NIV_60, NIV_90 };
+
+NivelIndex currentNivel = NIV_1;       // default intensity
+int        bpm          = 60;          // default rate
+bool       running      = false;       // periodic mode active?
+unsigned long lastShockMs = 0;         // last shock timestamp
+String     activeChatId  = "";         // chat to notify on start/stop
+
+// Returns the interval in ms for the current BPM
+unsigned long bpmToMs() {
+  return 60000UL / (unsigned long)bpm;
+}
+
+// Sends the signal corresponding to the current nivel
+void sendCurrentNivel() {
+  switch (currentNivel) {
+    case NIV_1:  sendSignal(nivel1Signal);  break;
+    case NIV_10: sendSignal(nivel10Signal); break;
+    case NIV_30: sendSignal(nivel30Signal); break;
+    case NIV_60: sendSignal(nivel60Signal); break;
+    case NIV_90: sendSignal(nivel90Signal); break;
+  }
+}
+
+const char* nivelName() {
+  switch (currentNivel) {
+    case NIV_1:  return "1";
+    case NIV_10: return "10";
+    case NIV_30: return "30";
+    case NIV_60: return "60";
+    case NIV_90: return "90";
+  }
+  return "?";
+}
+
+// ---------------------------------------------------------
+// EEPROM credentials
 void loadCreds() {
   EEPROM.begin(EEPROM_SIZE);
   credCount = EEPROM.read(0);
-  if (credCount > MAX_CREDENTIALS) credCount = 0;            // sanity
+  if (credCount > MAX_CREDENTIALS) credCount = 0;
   for (uint8_t i = 0; i < credCount; i++) {
     EEPROM.get(1 + i*sizeof(WiFiCred), creds[i]);
   }
 }
 
 void saveCred(const char *s, const char *p) {
-  if (credCount >= MAX_CREDENTIALS) return;                  // full
+  if (credCount >= MAX_CREDENTIALS) return;
   strncpy(creds[credCount].ssid,  s, sizeof(creds[0].ssid));
   strncpy(creds[credCount].pass,  p, sizeof(creds[0].pass));
   EEPROM.put(1 + credCount*sizeof(WiFiCred), creds[credCount]);
@@ -71,9 +120,9 @@ void saveCred(const char *s, const char *p) {
   EEPROM.write(0, credCount);
   EEPROM.commit();
 }
-// ---------------------------------------------------------
 
-// *** NEW -------------------------------------------------
+// ---------------------------------------------------------
+// WiFi connection / captive portal
 bool connectToKnown() {
   Serial.println(F("Scanning-and-connecting…"));
   for (uint8_t i = 0; i < credCount; i++) {
@@ -86,7 +135,7 @@ bool connectToKnown() {
     }
     Serial.println("fail");
   }
-  return false;               // none worked
+  return false;
 }
 
 void startConfigPortal() {
@@ -96,7 +145,6 @@ void startConfigPortal() {
   Serial.printf("Config AP up – connect to %s and browse to http://%s/\n",
                 "RF_Bot_Config", ip.toString().c_str());
 
-  // ---- minimal form page ----
   server.on("/", HTTP_GET, []() {
     server.send(200, "text/html",
       "<form method='POST' action=\"/save\">"
@@ -120,55 +168,87 @@ void startConfigPortal() {
   });
   server.begin();
 }
+
 // ---------------------------------------------------------
+// BPM parser: matches "\d+\s?BPM" (case-insensitive)
+// Returns the number, or -1 if no match.
+int parseBPM(const String &text) {
+  int len = text.length();
+  int numStart = -1;
+  int numEnd   = -1;
 
-
-// ------------- RF helper -------------------------
-template<size_t N>
-void sendSignal(const int16_t (&signal)[N], uint8_t repeats = 10) {
-  digitalWrite(ENABLE_PIN, HIGH);            // power the TX
-  for (uint8_t r = 0; r < repeats; r++) {
-    for (size_t i = 0; i < N; i++) {
-      int16_t v = pgm_read_word_near(signal + i);
-      digitalWrite(DATA_PIN, v > 0 ? HIGH : LOW);
-      delayMicroseconds(abs(v));
+  // Find first digit
+  for (int i = 0; i < len; i++) {
+    if (isDigit(text[i])) {
+      numStart = i;
+      break;
     }
   }
-  digitalWrite(DATA_PIN, LOW);
-  digitalWrite(ENABLE_PIN, LOW);
+  if (numStart < 0) return -1;
+
+  // Find end of digits
+  for (int i = numStart; i < len; i++) {
+    if (!isDigit(text[i])) {
+      numEnd = i;
+      break;
+    }
+  }
+  if (numEnd < 0) numEnd = len;
+
+  // After digits: optional space, then "bpm" (already lowercased)
+  int pos = numEnd;
+  if (pos < len && text[pos] == ' ') pos++;
+  if (pos + 3 > len) return -1;
+  if (text.substring(pos, pos + 3) != "bpm") return -1;
+
+  int val = text.substring(numStart, numEnd).toInt();
+  if (val < 10 || val > 200) return -1;
+  return val;
 }
 
-// ------------- Telegram objects ------------------
-// (WiFiClientSecure is mandatory – Telegram uses HTTPS)
-WiFiClientSecure tgClient;                   // *** NEW
-UniversalTelegramBot bot(BOT_TOKEN, tgClient); // *** NEW
-unsigned long lastCheck = 0;                 // *** NEW
-const unsigned POLL_INTERVAL = 2000;         // ms  // *** NEW
+// ---------------------------------------------------------
+// Telegram objects
+WiFiClientSecure tgClient;
+UniversalTelegramBot bot(BOT_TOKEN, tgClient);
+unsigned long lastCheck = 0;
+const unsigned POLL_INTERVAL = 2000; // ms
 
-// ------------- SETUP -----------------------------
+// Forward declaration
+void handleMessages(int numMsgs);
+
+// ---------------------------------------------------------
+// SETUP
 void setup() {
   pinMode(DATA_PIN, OUTPUT);
   pinMode(ENABLE_PIN, OUTPUT);
   Serial.begin(115200);
   delay(100);
 
-  loadCreds();                       // **** NEW
-  WiFi.mode(WIFI_STA);               // try station first
+  loadCreds();
+  WiFi.mode(WIFI_STA);
   if (!connectToKnown()) {
-    startConfigPortal();             // open AP if nothing connects
+    startConfigPortal();
   } else {
-    tgClient.setInsecure();          // (Telegram TLS you already had)
+    tgClient.setInsecure();
   }
 
-  Serial.println("ESP ready");
+  Serial.println("ESP ready – periodic mode");
 }
 
-// ------------- LOOP ------------------------------
+// ---------------------------------------------------------
+// LOOP
 void loop() {
-  server.handleClient();             // *** NEW (cheap when not in AP mode)
+  server.handleClient();
   unsigned long now = millis();
 
-  // --- Poll Telegram every POLL_INTERVAL ms ------ // *** NEW
+  // --- Periodic shock engine ---
+  if (running && (now - lastShockMs >= bpmToMs())) {
+    sendCurrentNivel();
+    lastShockMs = now;
+    Serial.printf("Periodic shock – nivel %s @ %d BPM\n", nivelName(), bpm);
+  }
+
+  // --- Poll Telegram ---
   if (now - lastCheck >= POLL_INTERVAL) {
     int numNewMsgs = bot.getUpdates(bot.last_message_received + 1);
     while (numNewMsgs) {
@@ -179,54 +259,84 @@ void loop() {
   }
 }
 
-// ----------- Command parser ---------------------- // *** NEW
+// ---------------------------------------------------------
+// Command parser
 void handleMessages(int numMsgs) {
   for (int i = 0; i < numMsgs; i++) {
     String chat_id = bot.messages[i].chat_id;
     String text    = bot.messages[i].text;
 
-    // (Security) – ignore messages from other chats
-    //if (chat_id != CHAT_ID) continue;
-
     text.toLowerCase();
 
+    // ---- /start : begin periodic shocks ----
     if (text == "/start") {
-      bot.sendMessage(chat_id,
-        "⚡ Elektra bot lista ⚡.\n\nComandos\n"
-        " • /vib\n"
-        " • /son\n"
-        " • /nivel1 /nivel10 /nivel30 /nivel60 /nivel90", "");
+      running     = true;
+      lastShockMs = millis();   // first shock fires immediately on next loop
+      activeChatId = chat_id;
+      String msg = String("⚡ Periodic mode ON ⚡\n") +
+                   "Nivel: " + nivelName() + "\n" +
+                   "Rate:  " + String(bpm) + " BPM\n\n" +
+                   "Comandos:\n"
+                   " • /vib – vibración\n"
+                   " • /son – alarma\n"
+                   " • /nivel1 /nivel10 /nivel30 /nivel60 /nivel90 – intensidad\n"
+                   " • 60 BPM (10–200) – cambiar frecuencia\n"
+                   " • /stop – detener";
+      bot.sendMessage(chat_id, msg, "");
     }
+
+    // ---- /stop : halt periodic shocks ----
+    else if (text == "/stop") {
+      running = false;
+      bot.sendMessage(chat_id, "⛔ Periodic mode OFF", "");
+    }
+
+    // ---- one-shot vibration ----
     else if (text == "/vib") {
       sendSignal(vibSignal);
       bot.sendMessage(chat_id, "⚠️ - Vibración activada 📳", "");
     }
+
+    // ---- one-shot sound ----
     else if (text == "/son") {
       sendSignal(sonSignal);
       bot.sendMessage(chat_id, "⚠️ - Alarma activada 📢", "");
     }
 
-    else if (text.equalsIgnoreCase("/nivel1")){
-      sendSignal(nivel1Signal);
-      bot.sendMessage(chat_id, "⚠️ - Estimulo eléctrico nivel 1 activado ⚡", "");
-    }  
-    else if (text.equalsIgnoreCase("/nivel10")){
-      sendSignal(nivel10Signal);
-      bot.sendMessage(chat_id, "⚠️ - Estimulo eléctrico nivel 10 activado ⚡", "");
-    }  
-    else if (text.equalsIgnoreCase("/nivel30")){
-      sendSignal(nivel30Signal);
-      bot.sendMessage(chat_id, "⚠️ - Estimulo eléctrico nivel 30 activado ⚡", "");
-    }  
-    else if (text.equalsIgnoreCase("/nivel60")){
-      sendSignal(nivel60Signal);
-      bot.sendMessage(chat_id, "⚠️ - Estimulo eléctrico nivel 60 activado ⚡", "");
-    }  
+    // ---- set intensity (does NOT fire immediately) ----
+    else if (text == "/nivel1") {
+      currentNivel = NIV_1;
+      bot.sendMessage(chat_id, "Intensidad → nivel 1", "");
+    }
+    else if (text == "/nivel10") {
+      currentNivel = NIV_10;
+      bot.sendMessage(chat_id, "Intensidad → nivel 10", "");
+    }
+    else if (text == "/nivel30") {
+      currentNivel = NIV_30;
+      bot.sendMessage(chat_id, "Intensidad → nivel 30", "");
+    }
+    else if (text == "/nivel60") {
+      currentNivel = NIV_60;
+      bot.sendMessage(chat_id, "Intensidad → nivel 60", "");
+    }
+    else if (text == "/nivel90") {
+      currentNivel = NIV_90;
+      bot.sendMessage(chat_id, "Intensidad → nivel 90", "");
+    }
 
-    else if (text.equalsIgnoreCase("/nivel90")){
-      sendSignal(nivel90Signal);
-      bot.sendMessage(chat_id, "⚠️ - Estimulo eléctrico nivel 90 activado ⚡", "");
-    }  
-
+    // ---- BPM change: "120 BPM", "120BPM", etc. ----
+    else {
+      int newBpm = parseBPM(text);
+      if (newBpm > 0) {
+        bpm = newBpm;
+        String msg = "Frecuencia → " + String(bpm) + " BPM";
+        if (running) {
+          msg += " (activo)";
+          lastShockMs = millis();  // reset timer so next shock uses new interval
+        }
+        bot.sendMessage(chat_id, msg, "");
+      }
+    }
   }
 }
