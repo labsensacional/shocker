@@ -48,7 +48,7 @@ const uint8_t DATA_PIN   = 26;   // GPIO26
 const uint8_t ENABLE_PIN = 27;   // GPIO27
 
 // ── Telegram bot token ────────────────────────────────────
-const char* BOT_TOKEN = "7730578439:AAFxy1-uXIsE8c73HOsEb9axsZlmZ_kv684";   // ← put your token here, keep private!
+const char* BOT_TOKEN = "COMPLETAR";   // ← put your token here, keep private!
 
 // ── Collar configuration ──────────────────────────────────
 #define TRANSMITTER_ID  0xB497   // 16-bit ID the collars are paired to
